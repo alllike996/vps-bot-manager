@@ -199,8 +199,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == 'setup_limit':
         keyboard = [
-            [InlineKeyboardButton("200GB", callback_data='set_200'), InlineKeyboardButton("500GB", callback_data='set_500')],
-            [InlineKeyboardButton("1024GB", callback_data='set_1024'), InlineKeyboardButton("关闭限制", callback_data='set_off')],
+            [InlineKeyboardButton("180GB", callback_data='set_180'), InlineKeyboardButton("200GB", callback_data='set_200')],
+            [InlineKeyboardButton("500GB", callback_data='set_500'), InlineKeyboardButton("关闭限制", callback_data='set_off')],
             [InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]
         ]
         status = f"当前限制: {config['limit_gb']}GB\n自动关机: {'开启' if config['auto_shutdown'] else '关闭'}"
