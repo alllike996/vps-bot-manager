@@ -24,11 +24,13 @@ Admin ID: 你的 Telegram 用户 ID（从 @userinfobot 获取），防止他人�
 流量阈值: 设置为 0 代表不限制，设置为具体数字（如 1024）代表 1TB 关机。
 
 ## 📂 文件结构
+
 安装路径: /opt/vpsbot
 配置文件: /opt/vpsbot/config.json
 日志查看: journalctl -u vpsbot -f
 
 ## 📝 手动管理命令
+
 启动: systemctl start vpsbot
 停止: systemctl stop vpsbot
 重启: systemctl restart vpsbot
