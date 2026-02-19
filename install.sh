@@ -60,6 +60,13 @@ mkdir -p "$INSTALL_DIR"
 # 从 GitHub 下载 vps_bot.py
 curl -sL "$GITHUB_REPO_URL" -o "$INSTALL_DIR/vps_bot.py"
 
+# 复制 vps_bb.py 到安装目录
+cp vps_bb.py "$INSTALL_DIR/"
+
+# 创建快捷命令
+ln -sf $INSTALL_DIR/vps_bb.py /usr/local/bin/vps-bb
+chmod +x $INSTALL_DIR/vps_bb.py
+
 if [ ! -f "$INSTALL_DIR/vps_bot.py" ]; then
     echo -e "${RED}❌ 下载失败！请检查 GitHub 仓库地址是否正确。${NC}"
     exit 1
