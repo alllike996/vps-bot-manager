@@ -22,6 +22,7 @@ sudo bash vpsbot_install.sh
 vps-bb  # 调出快捷面板
 systemctl status vpsbot  # 查看后台服务状态
 
+
 ```
 ## ⚙️ 配置说明
 
