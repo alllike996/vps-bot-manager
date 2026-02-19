@@ -11,7 +11,7 @@ NC='\033[0m'
 
 INSTALL_DIR="/opt/vpsbot"
 SERVICE_FILE="/etc/systemd/system/vpsbot.service"
-GITHUB_VPS_BOT="https://raw.githubusercontent.com/alllike996/vps-bot-manager/main/vps_bot.py"
+GITHUB_VPS_BOT="https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/vps_bot.py"
 GITHUB_VPS_BB="https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/vps_bb.py"
 
 echo -e "${GREEN}=========================================${NC}"
