@@ -14,8 +14,14 @@ Telegram VPS 管理机器人，支持流量监控、流量超标自动关机、�
 使用 root 用户 SSH 登录你的 VPS，执行以下命令即可：
 
 ```bash
-curl -o vpsbot_install.sh https://raw.githubusercontent.com/alllike996/vps-bot-manager/main/install.sh  
+# 下载并执行
+curl -o vpsbot_install.sh https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/install.sh  
 sudo bash vpsbot_install.sh  
+
+# 安装完成后
+vps-bb  # 调出快捷面板
+systemctl status vpsbot  # 查看后台服务状态
+
 
 ```
 ## ⚙️ 配置说明
