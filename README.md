@@ -18,19 +18,19 @@ curl -sL https://raw.githubusercontent.com/alllike996/vps-bot-manager/main/insta
 ```
 ## ⚙️ 配置说明
 
-安装过程中会提示输入以下信息：
-Bot Token: 从 @BotFather 获取。
-Admin ID: 你的 Telegram 用户 ID（从 @userinfobot 获取），防止他人操作。
-流量阈值: 设置为 0 代表不限制，设置为具体数字（如 1024）代表 1TB 关机。
+安装过程中会提示输入以下信息：  
+Bot Token: 从 @BotFather 获取。  
+Admin ID: 你的 Telegram 用户 ID（从 @userinfobot 获取），防止他人操作。  
+流量阈值: 设置为 0 代表不限制，设置为具体数字（如 1024）代表 1TB 关机。  
 
 ## 📂 文件结构
 
-安装路径: /opt/vpsbot
-配置文件: /opt/vpsbot/config.json
-日志查看: journalctl -u vpsbot -f
+安装路径: /opt/vpsbot  
+配置文件: /opt/vpsbot/config.json  
+日志查看: journalctl -u vpsbot -f  
 
 ## 📝 手动管理命令
 
-启动: systemctl start vpsbot
-停止: systemctl stop vpsbot
-重启: systemctl restart vpsbot
+启动: systemctl start vpsbot  
+停止: systemctl stop vpsbot  
+重启: systemctl restart vpsbot  
