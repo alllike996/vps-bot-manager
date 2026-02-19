@@ -15,8 +15,8 @@ Telegram VPS 管理机器人，支持流量监控、流量超标自动关机、�
 
 ```bash
 # 下载并执行
-curl -o vpsbot_install.sh https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/install.sh  
-sudo bash vpsbot_install.sh  
+curl -o vpsbot_install.sh https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/install.sh
+sudo bash vpsbot_install.sh
 
 # 安装完成后
 vps-bb  # 调出快捷面板
