@@ -60,12 +60,20 @@ mkdir -p "$INSTALL_DIR"
 # 从 GitHub 下载 vps_bot.py
 curl -sL "$GITHUB_REPO_URL" -o "$INSTALL_DIR/vps_bot.py"
 
-# 复制 vps_bb.py 到安装目录
-cp vps_bb.py "$INSTALL_DIR/"
+# 下载 vps_bb.py
+curl -sL "https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/vps_bb.py" -o "$INSTALL_DIR/vps_bb.py"
 
 # 创建快捷命令
 ln -sf $INSTALL_DIR/vps_bb.py /usr/local/bin/vps-bb
 chmod +x $INSTALL_DIR/vps_bb.py
+
+# 创建快捷命令使用虚拟环境 Python
+cat > /usr/local/bin/vps-bb <<EOF
+#!/bin/bash
+source $INSTALL_DIR/venv/bin/activate
+python $INSTALL_DIR/vps_bb.py
+EOF
+chmod +x /usr/local/bin/vps-bb
 
 if [ ! -f "$INSTALL_DIR/vps_bot.py" ]; then
     echo -e "${RED}❌ 下载失败！请检查 GitHub 仓库地址是否正确。${NC}"
