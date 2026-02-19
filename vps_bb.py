@@ -10,6 +10,7 @@ import shutil
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
 SHORTCUT_CMD = '/usr/local/bin/vps-bb'
+SYSTEMD_SERVICE = '/etc/systemd/system/vpsbot.service'
 
 def load_config():
     with open(CONFIG_FILE, 'r') as f:
@@ -103,18 +104,33 @@ def stop_script():
     sys.exit(0)
 
 def uninstall_script():
-    confirm = input("⚠️ 确定要卸载管理脚本吗? 这将删除整个安装目录和快捷命令! (y/n): ")
+    confirm = input(
+        "⚠️ 确定要卸载管理脚本吗? "
+        "这将删除整个安装目录、快捷命令和 systemd 服务! (y/n): "
+    )
     if confirm.lower() != 'y':
         print("❌ 已取消卸载")
         return
     try:
+        # 停止并删除 systemd 服务
+        if os.path.exists(SYSTEMD_SERVICE):
+            os.system("systemctl stop vpsbot")
+            os.system("systemctl disable vpsbot")
+            os.remove(SYSTEMD_SERVICE)
+            os.system("systemctl daemon-reload")
+            print(f"✅ 已删除 systemd 服务: {SYSTEMD_SERVICE}")
+
+        # 删除安装目录
         if os.path.exists(INSTALL_DIR):
             shutil.rmtree(INSTALL_DIR)
             print(f"✅ 已删除安装目录: {INSTALL_DIR}")
+
+        # 删除快捷命令
         if os.path.exists(SHORTCUT_CMD):
             os.remove(SHORTCUT_CMD)
             print(f"✅ 已删除快捷命令: {SHORTCUT_CMD}")
-        print("🛑 管理脚本已卸载，退出程序")
+
+        print("🛑 管理脚本和后台 Bot 已卸载，退出程序")
     except Exception as e:
         print(f"⚠️ 卸载失败: {e}")
     sys.exit(0)
