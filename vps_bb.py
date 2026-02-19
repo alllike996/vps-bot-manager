@@ -5,8 +5,11 @@ import json
 import psutil
 import subprocess
 from datetime import datetime
+import shutil
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
+INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
+SHORTCUT_CMD = '/usr/local/bin/vps-bb'
 
 def load_config():
     with open(CONFIG_FILE, 'r') as f:
@@ -99,6 +102,23 @@ def stop_script():
     print("🛑 正在退出管理脚本...")
     sys.exit(0)
 
+def uninstall_script():
+    confirm = input("⚠️ 确定要卸载管理脚本吗? 这将删除整个安装目录和快捷命令! (y/n): ")
+    if confirm.lower() != 'y':
+        print("❌ 已取消卸载")
+        return
+    try:
+        if os.path.exists(INSTALL_DIR):
+            shutil.rmtree(INSTALL_DIR)
+            print(f"✅ 已删除安装目录: {INSTALL_DIR}")
+        if os.path.exists(SHORTCUT_CMD):
+            os.remove(SHORTCUT_CMD)
+            print(f"✅ 已删除快捷命令: {SHORTCUT_CMD}")
+        print("🛑 管理脚本已卸载，退出程序")
+    except Exception as e:
+        print(f"⚠️ 卸载失败: {e}")
+    sys.exit(0)
+
 def menu():
     while True:
         print("""
@@ -115,6 +135,7 @@ def menu():
 8) 关机 VPS
 9) 重启管理脚本
 10) 停止管理脚本
+11) 卸载管理脚本
 0) 退出
 ========================
 """)
@@ -139,6 +160,8 @@ def menu():
             restart_script()
         elif choice == '10':
             stop_script()
+        elif choice == '11':
+            uninstall_script()
         elif choice == '0':
             print("退出...")
             break
