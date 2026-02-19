@@ -90,6 +90,15 @@ def shutdown_vps():
         print("🛑 正在关机...")
         os.system("shutdown -h now")
 
+def restart_script():
+    print("🔄 正在重启管理脚本...")
+    python = sys.executable
+    os.execl(python, python, * sys.argv)
+
+def stop_script():
+    print("🛑 正在退出管理脚本...")
+    sys.exit(0)
+
 def menu():
     while True:
         print("""
@@ -104,6 +113,8 @@ def menu():
 6) 查看流量统计
 7) 重启 VPS
 8) 关机 VPS
+9) 重启管理脚本
+10) 停止管理脚本
 0) 退出
 ========================
 """)
@@ -124,6 +135,10 @@ def menu():
             reboot_vps()
         elif choice == '8':
             shutdown_vps()
+        elif choice == '9':
+            restart_script()
+        elif choice == '10':
+            stop_script()
         elif choice == '0':
             print("退出...")
             break
