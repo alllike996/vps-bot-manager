@@ -161,7 +161,7 @@ async def monitor_ssh_login(app: Application):
             except Exception as e:
                 logger.error(f"SSH monitor error: {e}")
 
-# ================= Fail2Ban 状态（最终修复版） =================
+# ================= Fail2Ban 状态（精准修复版） =================
 def get_fail2ban_stats():
     curr_banned = total_banned = 0
     jail_name = "sshd"
@@ -173,10 +173,10 @@ def get_fail2ban_stats():
         ).decode()
 
         for line in output.splitlines():
-            line = line.strip()
-            # 修复核心：使用 in 判断，并且使用 正确截取冒号后面的数字
+            # 使用 in 判断是否包含关键字
             if "Currently banned:" in line:
                 try:
+                    # 用冒号分割，取最后一部分，并且去掉空格
                     curr_banned = int(line.split(":").strip())
                 except ValueError:
                     curr_banned = 0
@@ -262,7 +262,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
     elif query.data == 'reboot':
-        keyboard =,]
+        keyboard = [,]
         await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     elif query.data == 'confirm_reboot':
