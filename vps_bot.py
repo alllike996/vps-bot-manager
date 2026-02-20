@@ -13,17 +13,14 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 
-# 日志配置
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# 版本号
-VERSION = "v3.3.0"
+VERSION = "v3.3.1"
 
-# 全局配置字典
 config = {
     "bot_token": "",
     "admin_id": 0,
@@ -64,7 +61,7 @@ def admin_only(func):
         return await func(update, context)
     return wrapper
 
-# ================= 系统信息 =================
+# ================= 系统状态 =================
 def get_system_status():
     cpu_usage = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
@@ -85,10 +82,8 @@ def get_traffic_status():
         cmd = "vnstat --json"
         result = subprocess.check_output(cmd, shell=True).decode('utf-8')
         data = json.loads(result)
-
         interface = None
         target_iface = config.get('vnstat_interface')
-
         if target_iface:
             for iface in data['interfaces']:
                 if iface['name'] == target_iface:
@@ -98,20 +93,16 @@ def get_traffic_status():
             interface = data['interfaces'][0]
         if not interface:
             return "⚠️ vnstat 未检测到接口数据。", 0
-
         name = interface['name']
         traffic_month = interface.get('traffic', {}).get('month', [])
         if not traffic_month:
             return f"⚠️ 接口 {name} 暂无本月流量记录。", 0
-
         current_month = traffic_month[-1]
         rx = round(current_month['rx'] / (1024**3), 2)
         tx = round(current_month['tx'] / (1024**3), 2)
         total = round((current_month['rx'] + current_month['tx']) / (1024**3), 2)
-
         limit_msg = f"{config['limit_gb']} GB" if config['limit_gb'] > 0 else "无限制"
         auto_off_msg = "✅ 开启" if config['auto_shutdown'] else "❌ 关闭"
-
         msg = (
             f"📡 **流量统计 (本月)**\n"
             f"-------------------\n"
@@ -130,16 +121,12 @@ def get_traffic_status():
 
 # ================= SSH 登录监听 =================
 async def monitor_ssh_login(app: Application):
-    log_path = "/var/log/auth.log"
-    if not os.path.exists(log_path):
-        log_path = "/var/log/secure"
-
+    log_path = "/var/log/auth.log" if os.path.exists("/var/log/auth.log") else "/var/log/secure"
     process = await asyncio.create_subprocess_exec(
         "tail", "-Fn0", log_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL
     )
-
     while True:
         line = await process.stdout.readline()
         if not line:
@@ -166,20 +153,31 @@ async def monitor_ssh_login(app: Application):
             except Exception as e:
                 logger.error(f"SSH monitor error: {e}")
 
-# ================= Fail2Ban 状态 =================
+# ================= Fail2Ban 状态（日志统计） =================
 def get_fail2ban_stats():
-    """获取 Fail2Ban 当前封禁与累计封禁 IP 数量"""
     try:
-        jail_name = "sshd"
-        output = subprocess.check_output(f"sudo fail2ban-client status {jail_name}", shell=True).decode()
+        log_path = "/var/log/fail2ban.log"
+        if not os.path.exists(log_path):
+            return "⚠️ Fail2Ban 日志不存在"
         curr_banned = 0
         total_banned = 0
-        for line in output.splitlines():
-            if "Currently banned" in line:
-                curr_banned = int(line.strip().split()[-1])
-            if "Banned IP list" in line:
-                ips = line.strip().split()[-1]
-                total_banned = len(ips.split(',')) if ips else 0
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+        banned_ips = set()
+        for line in lines:
+            if "Ban" in line:
+                ip = line.strip().split()[-1]
+                banned_ips.add(ip)
+        total_banned = len(banned_ips)
+        # 当前封禁统计，使用 fail2ban-client 查询
+        jail_name = "sshd"
+        try:
+            output = subprocess.check_output(f"sudo fail2ban-client status {jail_name}", shell=True).decode()
+            for l in output.splitlines():
+                if "Currently banned" in l:
+                    curr_banned = int(l.strip().split()[-1])
+        except Exception:
+            pass
         msg = (
             f"⛔ **Fail2Ban 封禁统计**\n"
             f"🔹 当前封禁 IP 数量: {curr_banned}\n"
@@ -196,7 +194,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 系统状态", callback_data='status'),
          InlineKeyboardButton("📡 流量统计", callback_data='traffic')],
         [InlineKeyboardButton("🔐 SSH 登录记录", callback_data='ssh_logs'),
-         InlineKeyboardButton("⚠️ SSH 失败记录", callback_data='ssh_fail_logs')],
+         InlineKeyboardButton("❌ SSH 失败记录", callback_data='ssh_fail_logs')],
         [InlineKeyboardButton("⛔ Fail2Ban 封禁统计", callback_data='fail2ban')],
         [InlineKeyboardButton("⚙️ 设置流量阈值", callback_data='setup_limit')],
         [InlineKeyboardButton("🔄 重启 VPS", callback_data='reboot'),
@@ -204,7 +202,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"🤖 **VPS 管理面板 ({VERSION})**\n请选择操作："
-
     if update.callback_query:
         await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
@@ -218,12 +215,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == 'status':
         msg = get_system_status()
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
-
     elif query.data == 'traffic':
         msg, _ = get_traffic_status()
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
-
     elif query.data == 'ssh_logs':
         try:
             result = subprocess.check_output("last -n 10 | grep -v reboot", shell=True).decode()
@@ -231,8 +224,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"📜 **最近 10 次 SSH 登录**\n\n```\n{result}\n```"
         except Exception as e:
             msg = f"⚠️ 获取失败: {e}"
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
-
     elif query.data == 'ssh_fail_logs':
         try:
             log_path = "/var/log/auth.log" if os.path.exists("/var/log/auth.log") else "/var/log/secure"
@@ -241,21 +232,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"❌ **最近 10 次 SSH 失败登录**\n\n```\n{result}\n```"
         except Exception as e:
             msg = f"⚠️ 获取失败: {e}"
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
-
     elif query.data == 'fail2ban':
         msg = get_fail2ban_stats()
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
-
     elif query.data == 'setup_limit':
         keyboard = [
-            [InlineKeyboardButton("180GB", callback_data='set_180'), InlineKeyboardButton("200GB", callback_data='set_200')],
-            [InlineKeyboardButton("500GB", callback_data='set_500'), InlineKeyboardButton("关闭限制", callback_data='set_off')],
+            [InlineKeyboardButton("180GB", callback_data='set_180'),
+             InlineKeyboardButton("200GB", callback_data='set_200')],
+            [InlineKeyboardButton("500GB", callback_data='set_500'),
+             InlineKeyboardButton("关闭限制", callback_data='set_off')],
             [InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]
         ]
         status = f"当前限制: {config['limit_gb']}GB\n自动关机: {'开启' if config['auto_shutdown'] else '关闭'}"
         await query.edit_message_text(f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)", reply_markup=InlineKeyboardMarkup(keyboard))
-
+        return
     elif query.data.startswith('set_'):
         val = query.data.split('_')[1]
         if val == 'off':
@@ -269,23 +258,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_config()
         await query.answer(res, show_alert=True)
         await start(update, context)
-
+        return
     elif query.data == 'reboot':
-        keyboard = [
-            [InlineKeyboardButton("✅ 确认重启", callback_data='confirm_reboot')],
-            [InlineKeyboardButton("❌ 取消", callback_data='menu')]
-        ]
-        await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
+        keyboard = [[InlineKeyboardButton("✅ 确认重启", callback_data='confirm_reboot')],
+                    [InlineKeyboardButton("❌ 取消", callback_data='menu')]]
+        await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
     elif query.data == 'confirm_reboot':
         await query.edit_message_text("🔄 发送重启命令...", parse_mode='Markdown')
         os.system("reboot")
-
+        return
     elif query.data == 'close':
         await query.delete_message()
-
+        return
     elif query.data == 'menu':
         await start(update, context)
+        return
+
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
 
 # ================= 定时任务 =================
 async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
@@ -294,7 +284,8 @@ async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
     _, total_usage = get_traffic_status()
     if total_usage >= config['limit_gb']:
         try:
-            await context.bot.send_message(chat_id=config['admin_id'], text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config['limit_gb']}GB\n\n⚠️ **系统将于 10秒后 自动关机！**")
+            await context.bot.send_message(chat_id=config['admin_id'],
+                                           text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config['limit_gb']}GB\n\n⚠️ **系统将于 10秒后 自动关机！**")
         except Exception:
             pass
         await asyncio.sleep(10)
