@@ -39,8 +39,8 @@ def load_config():
             with open(CONFIG_FILE, 'r') as f:
                 saved_config = json.load(f)
                 config.update(saved_config)
-            config['admin_id'] = int(config['admin_id'])
-            config['limit_gb'] = int(config['limit_gb'])
+            config = int(config)
+            config = int(config)
         except Exception as e:
             logger.error(f"加载配置失败: {e}")
             sys.exit(1)
@@ -58,7 +58,7 @@ def save_config():
 # ================= 权限装饰器 =================
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != config['admin_id']:
+        if update.effective_user.id != config:
             return
         return await func(update, context)
     return wrapper
@@ -87,24 +87,24 @@ def get_traffic_status():
         interface = None
         target_iface = config.get('vnstat_interface')
         if target_iface:
-            for iface in data['interfaces']:
-                if iface['name'] == target_iface:
+            for iface in data:
+                if iface == target_iface:
                     interface = iface
                     break
-        if not interface and data['interfaces']:
-            interface = data['interfaces'][0]
+        if not interface and data:
+            interface = data
         if not interface:
             return "⚠️ vnstat 未检测到接口数据。", 0
-        name = interface['name']
-        traffic_month = interface.get('traffic', {}).get('month', [])
+        name = interface
+        traffic_month = interface.get('traffic', {}).get('month',[])
         if not traffic_month:
             return f"⚠️ 接口 {name} 暂无本月流量记录。", 0
-        current_month = traffic_month[-1]
-        rx = round(current_month['rx'] / (1024**3), 2)
-        tx = round(current_month['tx'] / (1024**3), 2)
-        total = round((current_month['rx'] + current_month['tx']) / (1024**3), 2)
-        limit_msg = f"{config['limit_gb']} GB" if config['limit_gb'] > 0 else "无限制"
-        auto_off_msg = "✅ 开启" if config['auto_shutdown'] else "❌ 关闭"
+        current_month = traffic_month
+        rx = round(current_month / (1024**3), 2)
+        tx = round(current_month / (1024**3), 2)
+        total = round((current_month + current_month) / (1024**3), 2)
+        limit_msg = f"{config} GB" if config > 0 else "无限制"
+        auto_off_msg = "✅ 开启" if config else "❌ 关闭"
         msg = (
             f"📡 **流量统计 (本月)**\n"
             f"-------------------\n"
@@ -139,14 +139,14 @@ async def monitor_ssh_login(app: Application):
         if "Accepted password" in text or "Accepted publickey" in text:
             try:
                 parts = text.split()
-                user = parts[8]
-                ip = parts[10]
+                user = parts
+                ip = parts
                 now = datetime.now()
                 # 防抖: 60秒内同IP不重复通知
                 last_time = ip_lock.get(ip)
                 if last_time and (now - last_time).total_seconds() < 60:
                     continue
-                ip_lock[ip] = now
+                ip_lock = now
                 auth_type = "password" if "password" in text else "publickey"
                 msg = (
                     f"🚨 **SSH 登录提醒**\n\n"
@@ -157,11 +157,11 @@ async def monitor_ssh_login(app: Application):
                 )
                 if user == "root":
                     msg += "\n⚠️ **ROOT 登录**"
-                await app.bot.send_message(chat_id=config['admin_id'], text=msg, parse_mode="Markdown")
+                await app.bot.send_message(chat_id=config, text=msg, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"SSH monitor error: {e}")
 
-# ================= Fail2Ban 状态（已去除防抖锁） =================
+# ================= Fail2Ban 状态（最终修复版） =================
 def get_fail2ban_stats():
     curr_banned = total_banned = 0
     jail_name = "sshd"
@@ -174,14 +174,15 @@ def get_fail2ban_stats():
 
         for line in output.splitlines():
             line = line.strip()
-            if line.startswith("Currently banned:"):
+            # 修复核心：使用 in 判断，并且使用 正确截取冒号后面的数字
+            if "Currently banned:" in line:
                 try:
-                    curr_banned = int(line.split(":")[-1].strip())
+                    curr_banned = int(line.split(":").strip())
                 except ValueError:
                     curr_banned = 0
-            elif line.startswith("Total banned:"):
+            elif "Total banned:" in line:
                 try:
-                    total_banned = int(line.split(":")[-1].strip())
+                    total_banned = int(line.split(":").strip())
                 except ValueError:
                     total_banned = 0
 
@@ -201,15 +202,7 @@ def get_fail2ban_stats():
 # ================= Telegram 面板 =================
 @admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("📊 系统状态", callback_data='status'),
-         InlineKeyboardButton("📡 流量统计", callback_data='traffic')],
-        [InlineKeyboardButton("🔐 SSH 登录记录", callback_data='ssh_logs'),
-         InlineKeyboardButton("❌ SSH 失败记录", callback_data='ssh_fail_logs')],
-        [InlineKeyboardButton("⛔ Fail2Ban 封禁统计", callback_data='fail2ban')],
-        [InlineKeyboardButton("⚙️ 设置流量阈值", callback_data='setup_limit')],
-        [InlineKeyboardButton("🔄 重启 VPS", callback_data='reboot'),
-         InlineKeyboardButton("❌ 关闭菜单", callback_data='close')]
+    keyboard = [,,,,
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"🤖 **VPS 管理面板 ({VERSION})**\n请选择操作："
@@ -220,8 +213,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()  # 必须应答，否则客户端会一直转圈 [web:9]
-    if query.from_user.id != config['admin_id']:
+    await query.answer()  # 必须应答，否则客户端会一直转圈
+    if query.from_user.id != config:
         return
 
     if query.data == 'status':
@@ -246,36 +239,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'fail2ban':
         msg = get_fail2ban_stats()
     elif query.data == 'setup_limit':
-        keyboard = [
-            [InlineKeyboardButton("180GB", callback_data='set_180'),
-             InlineKeyboardButton("200GB", callback_data='set_200')],
-            [InlineKeyboardButton("500GB", callback_data='set_500'),
-             InlineKeyboardButton("关闭限制", callback_data='set_off')],
-            [InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]
+        keyboard = [,,
         ]
-        status = f"当前限制: {config['limit_gb']}GB\n自动关机: {'开启' if config['auto_shutdown'] else '关闭'}"
+        status = f"当前限制: {config}GB\n自动关机: {'开启' if config else '关闭'}"
         await query.edit_message_text(
             f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
     elif query.data.startswith('set_'):
-        val = query.data.split('_')[1]
+        val = query.data.split('_')
         if val == 'off':
-            config['limit_gb'] = 0
-            config['auto_shutdown'] = False
+            config = 0
+            config = False
             res = "✅ 已关闭流量限制。"
         else:
-            config['limit_gb'] = int(val)
-            config['auto_shutdown'] = True
+            config = int(val)
+            config = True
             res = f"✅ 已设置上限为 {val}GB，达标自动关机。"
         save_config()
         await query.answer(res, show_alert=True)
         await start(update, context)
         return
     elif query.data == 'reboot':
-        keyboard = [[InlineKeyboardButton("✅ 确认重启", callback_data='confirm_reboot')],
-                    [InlineKeyboardButton("❌ 取消", callback_data='menu')]]
+        keyboard =,]
         await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     elif query.data == 'confirm_reboot':
@@ -291,20 +278,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         msg,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]),
+        reply_markup=InlineKeyboardMarkup([]),
         parse_mode='Markdown'
     )
 
 # ================= 定时任务 =================
 async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
-    if not config['auto_shutdown'] or config['limit_gb'] <= 0:
+    if not config or config <= 0:
         return
     _, total_usage = get_traffic_status()
-    if total_usage >= config['limit_gb']:
+    if total_usage >= config:
         try:
             await context.bot.send_message(
-                chat_id=config['admin_id'],
-                text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config['limit_gb']}GB\n\n⚠️ **系统将于 10秒后 自动关机！**"
+                chat_id=config,
+                text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config}GB\n\n⚠️ **系统将于 10秒后 自动关机！**"
             )
         except Exception:
             pass
@@ -317,10 +304,10 @@ async def on_startup(app: Application):
 
 def main():
     load_config()
-    if not config['bot_token']:
+    if not config:
         print("Error: Bot Token not configured.")
         return
-    application = Application.builder().token(config['bot_token']).build()
+    application = Application.builder().token(config).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.post_init = on_startup
