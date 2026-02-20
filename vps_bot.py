@@ -5,6 +5,7 @@ import subprocess
 import json
 import asyncio
 import sys
+import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -19,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "v3.3.2"
+VERSION = "v3.4.0"
 
 config = {
     "bot_token": "",
@@ -37,12 +38,16 @@ def load_config():
             with open(CONFIG_FILE, 'r') as f:
                 saved_config = json.load(f)
                 config.update(saved_config)
+            config['admin_id'] = int(config['admin_id'])
+            config['limit_gb'] = int(config['limit_gb'])
         except Exception as e:
             logger.error(f"加载配置失败: {e}")
             sys.exit(1)
     else:
-        logger.error("配置文件不存在，请先运行 install.sh 安装脚本！")
-        sys.exit(1)
+        logger.info("配置文件不存在，将首次运行提示输入 Token 和管理员 ID")
+        config['bot_token'] = input("请输入 Telegram Bot Token: ").strip()
+        config['admin_id'] = int(input("请输入管理员 Telegram ID: ").strip())
+        save_config()
 
 def save_config():
     try:
@@ -54,7 +59,7 @@ def save_config():
 # ================= 权限装饰器 =================
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != config.get('admin_id'):
+        if update.effective_user.id != config['admin_id']:
             return
         return await func(update, context)
     return wrapper
@@ -75,35 +80,33 @@ def get_system_status():
     )
     return msg
 
-# ================= 流量统计 =================
+# ================= 流量状态 =================
 def get_traffic_status():
     try:
         cmd = "vnstat --json"
         result = subprocess.check_output(cmd, shell=True).decode('utf-8')
         data = json.loads(result)
-        interfaces = data.get('interfaces', {})
+        interface = None
         target_iface = config.get('vnstat_interface')
-        if target_iface and target_iface in interfaces:
-            interface = interfaces[target_iface]
-        elif interfaces:
-            interface = list(interfaces.values())[0]
-        else:
+        if target_iface:
+            for iface in data['interfaces']:
+                if iface['name'] == target_iface:
+                    interface = iface
+                    break
+        if not interface and data['interfaces']:
+            interface = data['interfaces'][0]
+        if not interface:
             return "⚠️ vnstat 未检测到接口数据。", 0
-
-        name = interface.get('name', 'unknown')
+        name = interface['name']
         traffic_month = interface.get('traffic', {}).get('month', [])
         if not traffic_month:
             return f"⚠️ 接口 {name} 暂无本月流量记录。", 0
-
-        # 取本月第一个记录
-        current_month = traffic_month[0]
-        rx = round(current_month.get('rx',0) / 1024**3, 2)
-        tx = round(current_month.get('tx',0) / 1024**3, 2)
-        total = round(rx + tx, 2)
-
-        limit_msg = f"{config.get('limit_gb')} GB" if config.get('limit_gb') else "无限制"
-        auto_off_msg = "✅ 开启" if config.get('auto_shutdown') else "❌ 关闭"
-
+        current_month = traffic_month[-1]
+        rx = round(current_month['rx'] / (1024**3), 2)
+        tx = round(current_month['tx'] / (1024**3), 2)
+        total = round((current_month['rx'] + current_month['tx']) / (1024**3), 2)
+        limit_msg = f"{config['limit_gb']} GB" if config['limit_gb'] > 0 else "无限制"
+        auto_off_msg = "✅ 开启" if config['auto_shutdown'] else "❌ 关闭"
         msg = (
             f"📡 **流量统计 (本月)**\n"
             f"-------------------\n"
@@ -129,73 +132,57 @@ async def monitor_ssh_login(app: Application):
         stderr=asyncio.subprocess.DEVNULL
     )
     ip_lock = {}
+    pattern = re.compile(r'Accepted (password|publickey) for (\S+) from (\S+)')
     while True:
         line = await process.stdout.readline()
         if not line:
             await asyncio.sleep(0.1)
             continue
         text = line.decode()
-        if "Accepted password" in text or "Accepted publickey" in text:
+        match = pattern.search(text)
+        if match:
+            auth_type, user, ip = match.groups()
+            now = datetime.now()
+            last_time = ip_lock.get(ip)
+            if last_time and (now - last_time).total_seconds() < 60:
+                continue
+            ip_lock[ip] = now
+            msg = (
+                f"🚨 **SSH 登录提醒**\n\n"
+                f"👤 用户: {user}\n"
+                f"🌍 IP: {ip}\n"
+                f"🔐 方式: {auth_type}\n"
+                f"⏰ 时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            if user == "root":
+                msg += "\n⚠️ **ROOT 登录**"
             try:
-                import re
-                match = re.search(r"Accepted \S+ for (\S+) from (\S+)", text)
-                if not match:
-                    continue
-                user, ip = match.groups()
-                now = datetime.now()
-                # 防抖: 60秒内同IP不重复通知
-                last_time = ip_lock.get(ip)
-                if last_time and (now - last_time).total_seconds() < 60:
-                    continue
-                ip_lock[ip] = now
-
-                auth_type = "password" if "password" in text else "publickey"
-                msg = (
-                    f"🚨 **SSH 登录提醒**\n\n"
-                    f"👤 用户: {user}\n"
-                    f"🌍 IP: {ip}\n"
-                    f"🔐 方式: {auth_type}\n"
-                    f"⏰ 时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                if user == "root":
-                    msg += "\n⚠️ **ROOT 登录**"
-                await app.bot.send_message(chat_id=config.get('admin_id'), text=msg, parse_mode="Markdown")
+                await app.bot.send_message(chat_id=config['admin_id'], text=msg, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"SSH monitor error: {e}")
 
 # ================= Fail2Ban 状态 =================
 def get_fail2ban_stats():
-    curr_banned = total_banned = 0
-    jail_name = "sshd"
     try:
-        output = subprocess.check_output(
-            f"sudo fail2ban-client status {jail_name}",
-            shell=True,
-            stderr=subprocess.DEVNULL
-        ).decode()
-
-        for line in output.splitlines():
-            if "Currently banned:" in line:
-                try:
-                    curr_banned = int(line.split(":")[-1].strip())
-                except ValueError:
-                    curr_banned = 0
-            elif "Total banned:" in line:
-                try:
-                    total_banned = int(line.split(":")[-1].strip())
-                except ValueError:
-                    total_banned = 0
-
-        msg = (
-            f"⛔ **Fail2Ban 封禁统计**\n"
-            f"🔹 当前封禁 IP 数量: {curr_banned}\n"
-            f"🔹 累计封禁 IP 数量: {total_banned}"
-        )
-        return msg
-    except subprocess.CalledProcessError:
-        return "⚠️ Fail2Ban 未运行或权限不足"
-    except FileNotFoundError:
-        return "⚠️ 系统未安装 Fail2Ban"
+        curr_banned = 0
+        total_banned = 0
+        jail_name = "sshd"
+        try:
+            output = subprocess.check_output(f"sudo fail2ban-client status {jail_name}", shell=True).decode()
+            for l in output.splitlines():
+                if "Currently banned" in l:
+                    curr_banned = int(l.strip().split()[-1])
+        except Exception:
+            pass
+        log_path = "/var/log/fail2ban.log"
+        banned_ips = set()
+        if os.path.exists(log_path):
+            with open(log_path) as f:
+                for line in f:
+                    if "Ban" in line:
+                        banned_ips.add(line.strip().split()[-1])
+        total_banned = len(banned_ips)
+        return f"⛔ **Fail2Ban 封禁统计**\n🔹 当前封禁 IP 数量: {curr_banned}\n🔹 累计封禁 IP 数量: {total_banned}"
     except Exception as e:
         return f"⚠️ 获取 Fail2Ban 统计失败: {e}"
 
@@ -203,25 +190,27 @@ def get_fail2ban_stats():
 @admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("系统状态", callback_data='status')],
-        [InlineKeyboardButton("流量统计", callback_data='traffic')],
-        [InlineKeyboardButton("SSH 登录记录", callback_data='ssh_logs')],
-        [InlineKeyboardButton("SSH 失败登录", callback_data='ssh_fail_logs')],
-        [InlineKeyboardButton("Fail2Ban 状态", callback_data='fail2ban')],
-        [InlineKeyboardButton("流量阈值设置", callback_data='setup_limit')],
-        [InlineKeyboardButton("重启 VPS", callback_data='reboot')]
+        [InlineKeyboardButton("📊 系统状态", callback_data='status'),
+         InlineKeyboardButton("📡 流量统计", callback_data='traffic')],
+        [InlineKeyboardButton("🔐 SSH 登录记录", callback_data='ssh_logs'),
+         InlineKeyboardButton("❌ SSH 失败记录", callback_data='ssh_fail_logs')],
+        [InlineKeyboardButton("⛔ Fail2Ban 封禁统计", callback_data='fail2ban')],
+        [InlineKeyboardButton("⚙️ 设置流量阈值", callback_data='setup_limit')],
+        [InlineKeyboardButton("🔄 重启 VPS", callback_data='reboot'),
+         InlineKeyboardButton("❌ 关闭菜单", callback_data='close')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"🤖 **VPS 管理面板 ({VERSION})**\n请选择操作："
     if update.callback_query:
         await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
+# ================= 按钮处理 =================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.from_user.id != config.get('admin_id'):
+    if query.from_user.id != config['admin_id']:
         return
 
     if query.data == 'status':
@@ -247,19 +236,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = get_fail2ban_stats()
     elif query.data == 'setup_limit':
         keyboard = [
-            [InlineKeyboardButton("关闭限制", callback_data='set_off')],
-            [InlineKeyboardButton("设置 10GB", callback_data='set_10')],
-            [InlineKeyboardButton("设置 20GB", callback_data='set_20')],
-            [InlineKeyboardButton("返回菜单", callback_data='menu')]
+            [InlineKeyboardButton("180GB", callback_data='set_180'),
+             InlineKeyboardButton("200GB", callback_data='set_200')],
+            [InlineKeyboardButton("500GB", callback_data='set_500'),
+             InlineKeyboardButton("关闭限制", callback_data='set_off')],
+            [InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]
         ]
-        status = f"当前限制: {config.get('limit_gb')}GB\n自动关机: {'开启' if config.get('auto_shutdown') else '关闭'}"
-        await query.edit_message_text(
-            f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        status = f"当前限制: {config['limit_gb']}GB\n自动关机: {'开启' if config['auto_shutdown'] else '关闭'}"
+        await query.edit_message_text(f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     elif query.data.startswith('set_'):
-        val = query.data.split('_')[-1]
+        val = query.data.split('_')[1]
         if val == 'off':
             config['limit_gb'] = 0
             config['auto_shutdown'] = False
@@ -273,42 +260,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
     elif query.data == 'reboot':
-        keyboard = [
-            [InlineKeyboardButton("确认重启", callback_data='confirm_reboot')],
-            [InlineKeyboardButton("返回菜单", callback_data='menu')]
-        ]
+        keyboard = [[InlineKeyboardButton("✅ 确认重启", callback_data='confirm_reboot')],
+                    [InlineKeyboardButton("❌ 取消", callback_data='menu')]]
         await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？", reply_markup=InlineKeyboardMarkup(keyboard))
         return
     elif query.data == 'confirm_reboot':
         await query.edit_message_text("🔄 发送重启命令...", parse_mode='Markdown')
         os.system("reboot")
         return
-    elif query.data == 'menu':
-        await start(update, context)
-        return
     elif query.data == 'close':
         await query.delete_message()
         return
+    elif query.data == 'menu':
+        await start(update, context)
+        return
 
-    await query.edit_message_text(
-        msg,
-        reply_markup=InlineKeyboardMarkup([]),
-        parse_mode='Markdown'
-    )
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
 
 # ================= 定时任务 =================
 async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
-    limit_gb = config.get('limit_gb')
-    auto_shutdown = config.get('auto_shutdown')
-    if not limit_gb or not auto_shutdown:
+    if not config['auto_shutdown'] or config['limit_gb'] <= 0:
         return
     _, total_usage = get_traffic_status()
-    if total_usage >= limit_gb:
+    if total_usage >= config['limit_gb']:
         try:
-            await context.bot.send_message(
-                chat_id=config.get('admin_id'),
-                text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {limit_gb}GB\n\n⚠️ **系统将于 10秒后 自动关机！**"
-            )
+            await context.bot.send_message(chat_id=config['admin_id'],
+                                           text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config['limit_gb']}GB\n\n⚠️ **系统将于 10秒后 自动关机！**")
         except Exception:
             pass
         await asyncio.sleep(10)
@@ -320,10 +297,10 @@ async def on_startup(app: Application):
 
 def main():
     load_config()
-    if not config.get('bot_token'):
+    if not config['bot_token']:
         print("Error: Bot Token not configured.")
         return
-    application = Application.builder().token(config.get('bot_token')).build()
+    application = Application.builder().token(config['bot_token']).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.post_init = on_startup
