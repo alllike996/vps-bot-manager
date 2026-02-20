@@ -5,6 +5,8 @@ import subprocess
 import json
 import asyncio
 import sys
+import threading
+import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -127,6 +129,7 @@ async def monitor_ssh_login(app: Application):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL
     )
+    ip_lock = {}
     while True:
         line = await process.stdout.readline()
         if not line:
@@ -138,14 +141,19 @@ async def monitor_ssh_login(app: Application):
                 parts = text.split()
                 user = parts[8]
                 ip = parts[10]
+                now = datetime.now()
+                # 防抖: 60秒内同IP不重复通知
+                last_time = ip_lock.get(ip)
+                if last_time and (now - last_time).total_seconds() < 60:
+                    continue
+                ip_lock[ip] = now
                 auth_type = "password" if "password" in text else "publickey"
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 msg = (
                     f"🚨 **SSH 登录提醒**\n\n"
                     f"👤 用户: {user}\n"
                     f"🌍 IP: {ip}\n"
                     f"🔐 方式: {auth_type}\n"
-                    f"⏰ 时间: {now}"
+                    f"⏰ 时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 if user == "root":
                     msg += "\n⚠️ **ROOT 登录**"
@@ -153,37 +161,40 @@ async def monitor_ssh_login(app: Application):
             except Exception as e:
                 logger.error(f"SSH monitor error: {e}")
 
-# ================= Fail2Ban 状态（日志统计） =================
+# ================= Fail2Ban 状态（已去除防抖锁） =================
 def get_fail2ban_stats():
+    curr_banned = total_banned = 0
+    jail_name = "sshd"
     try:
-        log_path = "/var/log/fail2ban.log"
-        if not os.path.exists(log_path):
-            return "⚠️ Fail2Ban 日志不存在"
-        curr_banned = 0
-        total_banned = 0
-        with open(log_path, 'r') as f:
-            lines = f.readlines()
-        banned_ips = set()
-        for line in lines:
-            if "Ban" in line:
-                ip = line.strip().split()[-1]
-                banned_ips.add(ip)
-        total_banned = len(banned_ips)
-        # 当前封禁统计，使用 fail2ban-client 查询
-        jail_name = "sshd"
-        try:
-            output = subprocess.check_output(f"sudo fail2ban-client status {jail_name}", shell=True).decode()
-            for l in output.splitlines():
-                if "Currently banned" in l:
-                    curr_banned = int(l.strip().split()[-1])
-        except Exception:
-            pass
+        output = subprocess.check_output(
+            f"sudo fail2ban-client status {jail_name}",
+            shell=True,
+            stderr=subprocess.DEVNULL
+        ).decode()
+
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("Currently banned:"):
+                try:
+                    curr_banned = int(line.split(":")[-1].strip())
+                except ValueError:
+                    curr_banned = 0
+            elif line.startswith("Total banned:"):
+                try:
+                    total_banned = int(line.split(":")[-1].strip())
+                except ValueError:
+                    total_banned = 0
+
         msg = (
             f"⛔ **Fail2Ban 封禁统计**\n"
             f"🔹 当前封禁 IP 数量: {curr_banned}\n"
             f"🔹 累计封禁 IP 数量: {total_banned}"
         )
         return msg
+    except subprocess.CalledProcessError:
+        return "⚠️ Fail2Ban 未运行或权限不足"
+    except FileNotFoundError:
+        return "⚠️ 系统未安装 Fail2Ban"
     except Exception as e:
         return f"⚠️ 获取 Fail2Ban 统计失败: {e}"
 
@@ -209,7 +220,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # 必须应答，否则客户端会一直转圈 [web:9]
     if query.from_user.id != config['admin_id']:
         return
 
@@ -243,7 +254,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]
         ]
         status = f"当前限制: {config['limit_gb']}GB\n自动关机: {'开启' if config['auto_shutdown'] else '关闭'}"
-        await query.edit_message_text(f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
     elif query.data.startswith('set_'):
         val = query.data.split('_')[1]
@@ -275,7 +289,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
+    await query.edit_message_text(
+        msg,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]),
+        parse_mode='Markdown'
+    )
 
 # ================= 定时任务 =================
 async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
@@ -284,8 +302,10 @@ async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
     _, total_usage = get_traffic_status()
     if total_usage >= config['limit_gb']:
         try:
-            await context.bot.send_message(chat_id=config['admin_id'],
-                                           text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config['limit_gb']}GB\n\n⚠️ **系统将于 10秒后 自动关机！**")
+            await context.bot.send_message(
+                chat_id=config['admin_id'],
+                text=f"🚨 **流量严重警告**\n\n已用流量: {total_usage}GB\n设定阈值: {config['limit_gb']}GB\n\n⚠️ **系统将于 10秒后 自动关机！**"
+            )
         except Exception:
             pass
         await asyncio.sleep(10)
