@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================
-# VPS Telegram Bot 一键安装脚本 (增强版)
+# VPS Telegram Bot 一键安装脚本 (增强事务版)
 # ==============================
 
 set -e
@@ -16,76 +16,121 @@ SERVICE_FILE="/etc/systemd/system/vpsbot.service"
 GITHUB_VPS_BOT="https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/vps_bot.py"
 GITHUB_VPS_BB="https://raw.githubusercontent.com/alllike996/vps-bot-manager/tiga/vps_bb.py"
 
+VNSTAT_INSTALLED_NOW=false
+
+rollback() {
+  echo -e "${YELLOW}⚠ 是否删除本次已安装内容？(y/n)${NC}"
+  read CLEAN_CONFIRM
+  if [[ "$CLEAN_CONFIRM" =~ ^[Yy]$ ]]; then
+    systemctl stop vpsbot 2>/dev/null || true
+    systemctl disable vpsbot 2>/dev/null || true
+    rm -f "$SERVICE_FILE"
+    rm -rf "$INSTALL_DIR"
+    rm -f /usr/local/bin/vps-bb
+
+    if [ "$VNSTAT_INSTALLED_NOW" = true ]; then
+      echo -e "${YELLOW}是否卸载本次安装的 vnstat？(y/n)${NC}"
+      read REMOVE_VN
+      if [[ "$REMOVE_VN" =~ ^[Yy]$ ]]; then
+        if [ -f /etc/debian_version ]; then
+          apt-get remove -y vnstat -qq
+        elif [ -f /etc/redhat-release ]; then
+          yum remove -y vnstat
+        fi
+      fi
+    fi
+
+    systemctl daemon-reload
+    echo -e "${GREEN}✅ 已清理本次安装内容${NC}"
+  fi
+  exit 1
+}
+
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}      VPS Telegram Bot 一键安装脚本      ${NC}"
 echo -e "${GREEN}=========================================${NC}"
 
-# 1. Root 权限检测
+# Root 检测
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}❌ 请使用 root 用户运行此脚本 (sudo bash install.sh)${NC}"
+  echo -e "${RED}❌ 请使用 root 运行${NC}"
   exit 1
 fi
 
-# 2. systemd 检测
+# systemd 检测
 if ! command -v systemctl >/dev/null 2>&1; then
-  echo -e "${RED}❌ 当前系统不支持 systemd，无法创建服务${NC}"
+  echo -e "${RED}❌ 当前系统不支持 systemd${NC}"
   exit 1
 fi
 
-# 3. 重复安装检测
+# 重复安装检测
 if [ -d "$INSTALL_DIR" ]; then
-  echo -e "${YELLOW}⚠ 检测到已安装版本，是否覆盖安装？(y/n)${NC}"
+  echo -e "${YELLOW}⚠ 已存在安装目录，是否覆盖？(y/n)${NC}"
   read CONFIRM
-  if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "已取消安装。"
-    exit 0
-  fi
+  [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
   systemctl stop vpsbot 2>/dev/null || true
 fi
 
-# 4. 用户输入
+# =============================
+# 用户输入（循环校验）
+# =============================
+
 echo -e "${YELLOW}请配置机器人信息：${NC}"
-read -p "请输入 Telegram Bot Token: " INPUT_TOKEN
-read -p "请输入 Admin ID (数字): " INPUT_ADMIN_ID
-read -p "请输入流量限制阈值(GB, 0为不限制): " INPUT_LIMIT
-read -p "是否开启超标自动关机? (y/n): " INPUT_AUTO_SHUTDOWN
 
-# 输入校验
-if [ -z "$INPUT_TOKEN" ]; then
+while true; do
+  read -p "请输入 Telegram Bot Token: " INPUT_TOKEN
+  [ -n "$INPUT_TOKEN" ] && break
   echo -e "${RED}❌ Token 不能为空${NC}"
-  exit 1
-fi
+done
 
-if ! [[ "$INPUT_ADMIN_ID" =~ ^[0-9]+$ ]]; then
+while true; do
+  read -p "请输入 Admin ID (数字): " INPUT_ADMIN_ID
+  [[ "$INPUT_ADMIN_ID" =~ ^[0-9]+$ ]] && break
   echo -e "${RED}❌ Admin ID 必须为数字${NC}"
-  exit 1
-fi
+done
 
-if ! [[ "$INPUT_LIMIT" =~ ^[0-9]+$ ]]; then
+while true; do
+  read -p "请输入流量限制阈值(GB, 0为不限制): " INPUT_LIMIT
+  [[ "$INPUT_LIMIT" =~ ^[0-9]+$ ]] && break
   echo -e "${RED}❌ 流量限制必须为数字${NC}"
-  exit 1
-fi
+done
 
-if [[ "$INPUT_AUTO_SHUTDOWN" =~ ^[Yy]$ ]]; then
-  AUTO_SHUTDOWN="true"
-else
-  AUTO_SHUTDOWN="false"
-fi
+while true; do
+  read -p "是否开启超标自动关机? (y/n): " INPUT_AUTO_SHUTDOWN
+  if [[ "$INPUT_AUTO_SHUTDOWN" =~ ^[Yy]$ ]]; then
+    AUTO_SHUTDOWN="true"
+    break
+  elif [[ "$INPUT_AUTO_SHUTDOWN" =~ ^[Nn]$ ]]; then
+    AUTO_SHUTDOWN="false"
+    break
+  else
+    echo -e "${RED}❌ 请输入 y 或 n${NC}"
+  fi
+done
 
-# 5. 安装系统依赖
-echo -e "${GREEN}⏳ 正在安装系统依赖...${NC}"
+# =============================
+# 安装依赖
+# =============================
+
+echo -e "${GREEN}⏳ 安装系统依赖...${NC}"
+
 if [ -f /etc/debian_version ]; then
+    if ! dpkg -l | grep -q vnstat; then
+      VNSTAT_INSTALLED_NOW=true
+    fi
     apt-get update -qq
     apt-get install -y vnstat python3-pip python3-venv curl -qq
 elif [ -f /etc/redhat-release ]; then
+    rpm -q vnstat >/dev/null 2>&1 || VNSTAT_INSTALLED_NOW=true
     yum install -y vnstat python3-pip curl
 else
-    echo -e "${RED}❌ 不支持的 Linux 发行版${NC}"
-    exit 1
+    echo -e "${RED}❌ 不支持的系统${NC}"
+    rollback
 fi
 
-# 6. 初始化 vnstat
-echo -e "${GREEN}⏳ 配置网络监控接口...${NC}"
+# =============================
+# 初始化 vnstat
+# =============================
+
 systemctl enable vnstat
 systemctl start vnstat
 
@@ -93,59 +138,54 @@ DEFAULT_IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 
 if [ -z "$DEFAULT_IFACE" ]; then
   echo -e "${RED}❌ 无法自动识别网络接口${NC}"
-  exit 1
+  rollback
 fi
 
 vnstat -i "$DEFAULT_IFACE" --create 2>/dev/null || true
 systemctl restart vnstat
 
-# 7. 创建目录
+# =============================
+# 下载程序
+# =============================
+
 mkdir -p "$INSTALL_DIR"
 
-# 8. 下载脚本（带校验）
-echo -e "${GREEN}⏳ 正在下载脚本文件...${NC}"
+echo -e "${GREEN}⏳ 下载脚本...${NC}"
 
-curl -fL "$GITHUB_VPS_BOT" -o "$INSTALL_DIR/vps_bot.py" || {
+if ! curl -fL "$GITHUB_VPS_BOT" -o "$INSTALL_DIR/vps_bot.py"; then
   echo -e "${RED}❌ 主程序下载失败${NC}"
-  exit 1
-}
+  rollback
+fi
 
-curl -fL "$GITHUB_VPS_BB" -o "$INSTALL_DIR/vps_bb.py" || {
+if ! curl -fL "$GITHUB_VPS_BB" -o "$INSTALL_DIR/vps_bb.py"; then
   echo -e "${RED}❌ 管理脚本下载失败${NC}"
-  exit 1
-}
+  rollback
+fi
 
 chmod +x "$INSTALL_DIR/vps_bb.py"
 
-if [ ! -s "$INSTALL_DIR/vps_bot.py" ]; then
-  echo -e "${RED}❌ 主程序文件为空${NC}"
-  exit 1
-fi
+# =============================
+# Python 环境
+# =============================
 
-# 9. Python 虚拟环境
-echo -e "${GREEN}⏳ 创建 Python 虚拟环境...${NC}"
 cd "$INSTALL_DIR"
 
-python3 -m venv venv || {
+if ! python3 -m venv venv; then
   echo -e "${RED}❌ venv 创建失败${NC}"
-  exit 1
-}
+  rollback
+fi
 
 source venv/bin/activate
 
-pip install --upgrade pip || {
-  echo -e "${RED}❌ pip 升级失败${NC}"
-  exit 1
-}
-
-pip install "python-telegram-bot>=20.0,<21.0" psutil || {
-  echo -e "${RED}❌ Python 依赖安装失败${NC}"
-  exit 1
-}
+pip install --upgrade pip || rollback
+pip install "python-telegram-bot>=20.0,<21.0" psutil || rollback
 
 deactivate
 
-# 10. 生成配置文件
+# =============================
+# 生成配置
+# =============================
+
 cat > "$INSTALL_DIR/config.json" <<EOF
 {
     "bot_token": "$INPUT_TOKEN",
@@ -156,7 +196,7 @@ cat > "$INSTALL_DIR/config.json" <<EOF
 }
 EOF
 
-# 11. 创建快捷命令
+# 快捷命令
 cat > /usr/local/bin/vps-bb <<EOF
 #!/bin/bash
 source $INSTALL_DIR/venv/bin/activate
@@ -165,8 +205,9 @@ EOF
 
 chmod +x /usr/local/bin/vps-bb
 
-# 12. 创建 systemd 服务（优化网络等待）
-echo -e "${GREEN}⏳ 创建后台服务...${NC}"
+# =============================
+# 创建服务
+# =============================
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -193,8 +234,8 @@ systemctl restart vpsbot
 sleep 2
 
 if ! systemctl is-active --quiet vpsbot; then
-  echo -e "${RED}❌ 服务启动失败，请检查日志：journalctl -u vpsbot -f${NC}"
-  exit 1
+  echo -e "${RED}❌ 服务启动失败${NC}"
+  rollback
 fi
 
 echo -e "${GREEN}=========================================${NC}"
