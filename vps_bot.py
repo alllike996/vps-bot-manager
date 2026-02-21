@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "v3.4.0"
+VERSION = "v3.5.0"
 
 config = {
     "bot_token": "",
@@ -165,7 +165,6 @@ async def monitor_ssh_login(app: Application):
 def get_fail2ban_stats():
     try:
         curr_banned = 0
-        total_banned = 0
         jail_name = "sshd"
         try:
             output = subprocess.check_output(f"sudo fail2ban-client status {jail_name}", shell=True).decode()
@@ -197,7 +196,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⛔ Fail2Ban 封禁统计", callback_data='fail2ban')],
         [InlineKeyboardButton("⚙️ 设置流量阈值", callback_data='setup_limit')],
         [InlineKeyboardButton("🔄 重启 VPS", callback_data='reboot'),
-         InlineKeyboardButton("❌ 关闭菜单", callback_data='close')]
+         InlineKeyboardButton("🛑 立即关机", callback_data='shutdown')],
+        [InlineKeyboardButton("❌ 关闭菜单", callback_data='close')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = f"🤖 **VPS 管理面板 ({VERSION})**\n请选择操作："
@@ -215,8 +215,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == 'status':
         msg = get_system_status()
+
     elif query.data == 'traffic':
         msg, _ = get_traffic_status()
+
     elif query.data == 'ssh_logs':
         try:
             result = subprocess.check_output("last -n 10 | grep -v reboot", shell=True).decode()
@@ -224,6 +226,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"📜 **最近 10 次 SSH 登录**\n\n```\n{result}\n```"
         except Exception as e:
             msg = f"⚠️ 获取失败: {e}"
+
     elif query.data == 'ssh_fail_logs':
         try:
             log_path = "/var/log/auth.log" if os.path.exists("/var/log/auth.log") else "/var/log/secure"
@@ -232,8 +235,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"❌ **最近 10 次 SSH 失败登录**\n\n```\n{result}\n```"
         except Exception as e:
             msg = f"⚠️ 获取失败: {e}"
+
     elif query.data == 'fail2ban':
         msg = get_fail2ban_stats()
+
     elif query.data == 'setup_limit':
         keyboard = [
             [InlineKeyboardButton("180GB", callback_data='set_180'),
@@ -243,8 +248,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]
         ]
         status = f"当前限制: {config['limit_gb']}GB\n自动关机: {'开启' if config['auto_shutdown'] else '关闭'}"
-        await query.edit_message_text(f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(f"⚙️ **流量阈值设置**\n{status}\n(达标后将自动执行关机)",
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
         return
+
     elif query.data.startswith('set_'):
         val = query.data.split('_')[1]
         if val == 'off':
@@ -259,23 +266,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(res, show_alert=True)
         await start(update, context)
         return
+
     elif query.data == 'reboot':
         keyboard = [[InlineKeyboardButton("✅ 确认重启", callback_data='confirm_reboot')],
                     [InlineKeyboardButton("❌ 取消", callback_data='menu')]]
-        await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("⚠️ **高风险操作**\n确定要重启 VPS 吗？",
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
         return
+
     elif query.data == 'confirm_reboot':
         await query.edit_message_text("🔄 发送重启命令...", parse_mode='Markdown')
         os.system("reboot")
         return
+
+    elif query.data == 'shutdown':
+        keyboard = [[InlineKeyboardButton("🛑 确认关机", callback_data='confirm_shutdown')],
+                    [InlineKeyboardButton("❌ 取消", callback_data='menu')]]
+        await query.edit_message_text("⚠️ **高风险操作**\n确定要立即关机 VPS 吗？",
+                                      reply_markup=InlineKeyboardMarkup(keyboard),
+                                      parse_mode='Markdown')
+        return
+
+    elif query.data == 'confirm_shutdown':
+        await query.edit_message_text("🛑 正在执行关机命令...", parse_mode='Markdown')
+        os.system("shutdown -h now")
+        return
+
     elif query.data == 'close':
         await query.delete_message()
         return
+
     elif query.data == 'menu':
         await start(update, context)
         return
 
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]), parse_mode='Markdown')
+    await query.edit_message_text(msg,
+                                  reply_markup=InlineKeyboardMarkup(
+                                      [[InlineKeyboardButton("🔙 返回菜单", callback_data='menu')]]
+                                  ),
+                                  parse_mode='Markdown')
 
 # ================= 定时任务 =================
 async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
