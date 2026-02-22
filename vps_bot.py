@@ -21,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "v3.8.0"
+VERSION = "v3.8.2"   # 小版本升级，方便区分
 
 config = {
     "bot_token": "",
@@ -41,6 +41,7 @@ def load_config():
                 config.update(saved_config)
             config['admin_id'] = int(config['admin_id'])
             config['limit_gb'] = int(config['limit_gb'])
+            config['auto_shutdown'] = bool(config.get('auto_shutdown', False))
         except Exception as e:
             logger.error(f"加载配置失败: {e}")
             sys.exit(1)
@@ -57,6 +58,23 @@ def save_config():
     except Exception as e:
         logger.error(f"保存配置失败: {e}")
 
+# ================= 强制重新加载配置 =================
+def reload_config():
+    global config
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                saved_config = json.load(f)
+                config.update(saved_config)
+            config['admin_id'] = int(config.get('admin_id', 0))
+            config['limit_gb'] = int(config.get('limit_gb', 0))
+            config['auto_shutdown'] = bool(config.get('auto_shutdown', False))
+            config['vnstat_interface'] = config.get('vnstat_interface', '')
+        except Exception as e:
+            logger.error(f"重新加载配置失败: {e}")
+    else:
+        logger.warning("配置文件不存在，无法重新加载")
+
 # ================= 权限装饰器 =================
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,6 +85,7 @@ def admin_only(func):
 
 # ================= 系统状态 =================
 def get_system_status():
+    reload_config()
     cpu_usage = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
@@ -83,6 +102,7 @@ def get_system_status():
 
 # ================= 流量状态 =================
 def get_traffic_status():
+    reload_config()
     try:
         cmd = "vnstat --json"
         result = subprocess.check_output(cmd, shell=True).decode('utf-8')
@@ -98,16 +118,20 @@ def get_traffic_status():
             interface = data['interfaces'][0]
         if not interface:
             return "⚠️ vnstat 未检测到接口数据。", 0
+
         name = interface['name']
         traffic_month = interface.get('traffic', {}).get('month', [])
         if not traffic_month:
             return f"⚠️ 接口 {name} 暂无本月流量记录。", 0
+
         current_month = traffic_month[-1]
         rx = round(current_month['rx'] / (1024**3), 2)
         tx = round(current_month['tx'] / (1024**3), 2)
         total = round((current_month['rx'] + current_month['tx']) / (1024**3), 2)
+
         limit_msg = f"{config['limit_gb']} GB" if config['limit_gb'] > 0 else "无限制"
         auto_off_msg = "✅ 开启" if config['auto_shutdown'] else "❌ 关闭"
+
         msg = (
             f"📡 **流量统计 (本月)**\n"
             f"-------------------\n"
@@ -162,26 +186,38 @@ async def monitor_ssh_login(app: Application):
             except Exception as e:
                 logger.error(f"SSH monitor error: {e}")
 
-# ================= Fail2Ban 状态 =================
+# ================= Fail2Ban 状态（已优化）=================
 def get_fail2ban_stats():
     try:
         curr_banned = 0
+        total_banned = 0
         jail_name = "sshd"
+
+        # 优先从 fail2ban-client status 获取官方累计值（最准确）
         try:
             output = subprocess.check_output(f"sudo fail2ban-client status {jail_name}", shell=True).decode()
             for l in output.splitlines():
-                if "Currently banned" in l:
-                    curr_banned = int(l.strip().split()[-1])
+                stripped = l.strip()
+                if "Currently banned" in stripped:
+                    curr_banned = int(stripped.split()[-1])
+                if "Total banned" in stripped:
+                    total_banned = int(stripped.split()[-1])
         except Exception:
             pass
-        log_path = "/var/log/fail2ban.log"
-        banned_ips = set()
-        if os.path.exists(log_path):
-            with open(log_path) as f:
-                for line in f:
-                    if "Ban" in line:
-                        banned_ips.add(line.strip().split()[-1])
-        total_banned = len(banned_ips)
+
+        # 如果 status 取不到 Total banned（旧版 fail2ban），则用你提供的正则从日志提取
+        if total_banned == 0:
+            log_path = "/var/log/fail2ban.log"
+            banned_ips = set()
+            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+            if os.path.exists(log_path):
+                with open(log_path) as f:
+                    for line in f:
+                        if "Ban" in line or "Banned IP list" in line:
+                            ips = ip_pattern.findall(line)
+                            banned_ips.update(ips)
+                total_banned = len(banned_ips)
+
         return f"⛔ **Fail2Ban 封禁统计**\n🔹 当前封禁 IP 数量: {curr_banned}\n🔹 累计封禁 IP 数量: {total_banned}"
     except Exception as e:
         return f"⚠️ 获取 Fail2Ban 统计失败: {e}"
@@ -214,47 +250,40 @@ async def clean_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     msg = await query.edit_message_text("🧹 系统清理任务开始...\n")
-    
-    # 清理前磁盘占用
+   
     disk_before = psutil.disk_usage('/')
     used_before_gb = round(disk_before.used / (1024**3), 3)
     total_gb = round(disk_before.total / (1024**3), 3)
-
     commands = [
         ("归档 systemd 日志", "sudo journalctl --rotate"),
         ("清理 APT 缓存", "sudo apt clean -y"),
         ("压缩 systemd 日志至 50MB", "sudo journalctl --vacuum-size=50M")
     ]
-    
+   
     output_text = (
         "🧹 系统清理任务开始...\n\n"
         f"💽 清理前占用: {used_before_gb} GB / {total_gb} GB\n\n"
     )
     await msg.edit_text(output_text)
     start_time = time.time()
-    
+   
     for index, (desc, cmd) in enumerate(commands, start=1):
         output_text += f"{index}️⃣ {desc}...\n"
         await msg.edit_text(output_text)
         try:
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
-                output_text += "   ✅ 成功\n\n"
+                output_text += " ✅ 成功\n\n"
             else:
-                output_text += f"   ❌ 失败\n   错误：{result.stderr.strip()}\n\n"
+                output_text += f" ❌ 失败\n 错误：{result.stderr.strip()}\n\n"
         except subprocess.TimeoutExpired:
-            output_text += "   ❌ 超时\n\n"
+            output_text += " ❌ 超时\n\n"
         await msg.edit_text(output_text)
-
-    # 清理后磁盘占用
     disk_after = psutil.disk_usage('/')
     used_after_gb = round(disk_after.used / (1024**3), 3)
     freed_gb = round(used_before_gb - used_after_gb, 3)
     freed_percent = round((freed_gb / used_before_gb) * 100, 2) if used_before_gb > 0 else 0
-
     total_time = round(time.time() - start_time, 2)
-
-    # 专业报告风格输出
     output_text += (
         "📊 **清理完成报告**\n"
         "---------------------------\n"
@@ -265,7 +294,6 @@ async def clean_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏱ 总耗时: {total_time} 秒\n"
         "---------------------------"
     )
-
     await msg.edit_text(output_text, parse_mode='Markdown')
 
 # ================= 按钮处理 =================
@@ -276,8 +304,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == 'status':
+        reload_config()
         msg = get_system_status()
     elif query.data == 'traffic':
+        reload_config()
         msg, _ = get_traffic_status()
     elif query.data == 'ssh_logs':
         try:
@@ -297,6 +327,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'fail2ban':
         msg = get_fail2ban_stats()
     elif query.data == 'setup_limit':
+        reload_config()
         keyboard = [
             [InlineKeyboardButton("180GB", callback_data='set_180'),
              InlineKeyboardButton("200GB", callback_data='set_200')],
@@ -361,6 +392,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= 定时任务 =================
 async def check_traffic_job(context: ContextTypes.DEFAULT_TYPE):
+    reload_config()
     if not config['auto_shutdown'] or config['limit_gb'] <= 0:
         return
     _, total_usage = get_traffic_status()
