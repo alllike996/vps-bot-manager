@@ -21,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "v3.7.0"
+VERSION = "v3.8.0"
 
 config = {
     "bot_token": "",
@@ -215,20 +215,29 @@ async def clean_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     msg = await query.edit_message_text("🧹 系统清理任务开始...\n")
     
+    # 清理前磁盘占用
+    disk_before = psutil.disk_usage('/')
+    used_before_gb = round(disk_before.used / (1024**3), 3)
+    total_gb = round(disk_before.total / (1024**3), 3)
+
     commands = [
         ("归档 systemd 日志", "sudo journalctl --rotate"),
         ("清理 APT 缓存", "sudo apt clean -y"),
         ("压缩 systemd 日志至 50MB", "sudo journalctl --vacuum-size=50M")
     ]
     
-    output_text = "🧹 系统清理任务开始...\n\n"
+    output_text = (
+        "🧹 系统清理任务开始...\n\n"
+        f"💽 清理前占用: {used_before_gb} GB / {total_gb} GB\n\n"
+    )
+    await msg.edit_text(output_text)
     start_time = time.time()
     
     for index, (desc, cmd) in enumerate(commands, start=1):
         output_text += f"{index}️⃣ {desc}...\n"
         await msg.edit_text(output_text)
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
                 output_text += "   ✅ 成功\n\n"
             else:
@@ -236,10 +245,28 @@ async def clean_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except subprocess.TimeoutExpired:
             output_text += "   ❌ 超时\n\n"
         await msg.edit_text(output_text)
-    
+
+    # 清理后磁盘占用
+    disk_after = psutil.disk_usage('/')
+    used_after_gb = round(disk_after.used / (1024**3), 3)
+    freed_gb = round(used_before_gb - used_after_gb, 3)
+    freed_percent = round((freed_gb / used_before_gb) * 100, 2) if used_before_gb > 0 else 0
+
     total_time = round(time.time() - start_time, 2)
-    output_text += f"📊 执行统计：\n总耗时：{total_time} 秒"
-    await msg.edit_text(output_text)
+
+    # 专业报告风格输出
+    output_text += (
+        "📊 **清理完成报告**\n"
+        "---------------------------\n"
+        f"💽 清理前占用: {used_before_gb} GB / {total_gb} GB\n"
+        f"💾 清理后占用: {used_after_gb} GB / {total_gb} GB\n"
+        f"🗑 释放空间: {freed_gb} GB\n"
+        f"📈 释放百分比: {freed_percent}%\n"
+        f"⏱ 总耗时: {total_time} 秒\n"
+        "---------------------------"
+    )
+
+    await msg.edit_text(output_text, parse_mode='Markdown')
 
 # ================= 按钮处理 =================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
