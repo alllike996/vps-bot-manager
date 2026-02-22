@@ -7,13 +7,12 @@ import subprocess
 from datetime import datetime
 import shutil
 
-VERSION = "v2.1.0"
+VERSION = "v2.1.1"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
 SHORTCUT_CMD = '/usr/local/bin/vps-bb'
 SYSTEMD_SERVICE = '/etc/systemd/system/vpsbot.service'
-
 
 # ===================== 颜色定义 =====================
 RESET = "\033[0m"
@@ -23,12 +22,9 @@ YELLOW = "\033[33m"
 CYAN = "\033[36m"
 BOLD = "\033[1m"
 
-
 # ===================== 工具函数 =====================
-
 def clear_screen():
     os.system("clear")
-
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -39,7 +35,6 @@ def load_config():
     except Exception:
         return {}
 
-
 def save_config(cfg):
     try:
         with open(CONFIG_FILE, 'w') as f:
@@ -47,14 +42,12 @@ def save_config(cfg):
     except Exception as e:
         print(f"{RED}❌ 保存配置失败: {e}{RESET}")
 
-
 def safe_int_input(prompt):
     value = input(prompt).strip()
     if not value.isdigit():
         print(f"{RED}❌ 请输入有效数字！{RESET}")
         return None
     return int(value)
-
 
 def progress_bar(percent, width=30):
     filled = int(width * percent / 100)
@@ -67,9 +60,7 @@ def progress_bar(percent, width=30):
         color = RED
     return f"{color}[{bar}] {percent}%{RESET}"
 
-
 # ===================== 设置功能 =====================
-
 def set_token():
     cfg = load_config()
     token = input("请输入新的 Telegram Bot Token: ").strip()
@@ -80,7 +71,6 @@ def set_token():
     save_config(cfg)
     print(f"{GREEN}✅ Bot Token 已更新！{RESET}")
 
-
 def set_admin():
     cfg = load_config()
     admin_id = safe_int_input("请输入新的 Admin ID: ")
@@ -89,7 +79,6 @@ def set_admin():
     cfg['admin_id'] = admin_id
     save_config(cfg)
     print(f"{GREEN}✅ Admin ID 已更新！{RESET}")
-
 
 def set_limit():
     cfg = load_config()
@@ -101,7 +90,6 @@ def set_limit():
     save_config(cfg)
     print(f"{GREEN}✅ 流量阈值已更新为 {limit} GB{RESET}")
 
-
 def toggle_auto_shutdown():
     cfg = load_config()
     cfg['auto_shutdown'] = not cfg.get('auto_shutdown', False)
@@ -109,9 +97,7 @@ def toggle_auto_shutdown():
     state = "开启" if cfg['auto_shutdown'] else "关闭"
     print(f"{GREEN if state=='开启' else RED}✅ 自动关机已{state}{RESET}")
 
-
 # ===================== 状态显示 =====================
-
 def show_status():
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
@@ -130,7 +116,6 @@ def show_status():
     print(f"\n💾 磁盘使用率:")
     print(progress_bar(disk.percent))
     print()
-
 
 def show_traffic():
     cfg = load_config()
@@ -163,60 +148,61 @@ def show_traffic():
     except Exception as e:
         print(f"{RED}⚠️ 无法获取流量: {e}{RESET}")
 
-
 # ===================== 系统操作 =====================
-
 def reboot_vps():
     confirm = input(f"{RED}⚠️ 确定要重启 VPS 吗? (y/n): {RESET}").lower()
     if confirm == 'y':
         subprocess.run(["reboot"])
-
 
 def shutdown_vps():
     confirm = input(f"{RED}⚠️ 确定要关机 VPS 吗? (y/n): {RESET}").lower()
     if confirm == 'y':
         subprocess.run(["shutdown", "-h", "now"])
 
-
 def restart_script():
     python = sys.executable
     os.execl(python, python, *sys.argv)
 
-
 def stop_script():
     sys.exit(0)
 
-
 def uninstall_script():
     confirm = input(
-        f"{RED}⚠️ 确定要卸载管理脚本吗? (y/n): {RESET}"
+        f"{RED}⚠️ 确定要卸载管理脚本吗? "
+        "这将删除整个安装目录、快捷命令和 systemd 服务! (y/n): {RESET}"
     ).lower()
 
     if confirm != 'y':
+        print(f"{RED}❌ 已取消卸载{RESET}")
         return
 
     try:
+        # 停止 systemd 服务并删除
         if os.path.exists(SYSTEMD_SERVICE):
             subprocess.run(["systemctl", "stop", "vpsbot"])
             subprocess.run(["systemctl", "disable", "vpsbot"])
             os.remove(SYSTEMD_SERVICE)
             subprocess.run(["systemctl", "daemon-reload"])
+            print(f"{GREEN}✅ 已删除 systemd 服务: {SYSTEMD_SERVICE}{RESET}")
 
+        # 删除安装目录
         if os.path.exists(INSTALL_DIR):
             shutil.rmtree(INSTALL_DIR)
+            print(f"{GREEN}✅ 已删除安装目录: {INSTALL_DIR}{RESET}")
 
+        # 删除快捷命令
         if os.path.exists(SHORTCUT_CMD):
             os.remove(SHORTCUT_CMD)
+            print(f"{GREEN}✅ 已删除快捷命令: {SHORTCUT_CMD}{RESET}")
 
-        print(f"{GREEN}已卸载完成{RESET}")
+        print(f"{RED}🛑 管理脚本和后台 Bot 已卸载，退出程序{RESET}")
+
     except Exception as e:
-        print(f"{RED}卸载失败: {e}{RESET}")
+        print(f"{RED}⚠️ 卸载失败: {e}{RESET}")
 
     sys.exit(0)
 
-
 # ===================== 菜单 =====================
-
 def menu():
     while True:
         clear_screen()
@@ -273,12 +259,13 @@ def menu():
         elif choice == '11':
             uninstall_script()
         elif choice == '0':
+            print(f"{YELLOW}退出管理面板{RESET}")
             break
         else:
             print(f"{RED}❌ 无效选项{RESET}")
 
         input("\n按回车返回菜单...")
 
-
+# ===================== 主程序入口 =====================
 if __name__ == "__main__":
     menu()
