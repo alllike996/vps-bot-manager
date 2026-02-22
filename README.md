@@ -45,5 +45,5 @@ Admin ID: 你的 Telegram 用户 ID（从 @userinfobot 获取），防止他人�
 
 ## 三个分支说明
 
-main目前同test  都是最新版本
-tiga 属于未优化，属于早期版本
+main目前同test  都是最新版本  
+tiga 属于未优化，属于早期版本  
