@@ -43,23 +43,22 @@ Admin ID: 你的 Telegram 用户 ID（从 @userinfobot 获取），防止他人�
 停止: systemctl stop vpsbot  
 重启: systemctl restart vpsbot  
 
-## 三个分支说明
+## 四个分支说明
 
 main目前同test  都是最新版本  
 tiga 属于未优化，属于早期版本  
-
+fix/security-hardening修复版本最新
 ---
 
 ## 🎉 最新更新：安全加固与流量告警模式
 
 > 🌿 **更新分支：** `fix/security-hardening`  
-> 🛡️ **更新重点：** 凭据保护、权限加固、私聊管理、流量超限仅告警 、修复失败ssh记录无的bug，（扩展了匹配规则：不仅检查 Failed password，还增加了 Invalid user、Failed publickey、authentication failure、Connection closed、Disconnected from 以及尝试次数超限等 8 种失败场景。）
-> 
+> 🛡️ **更新重点：** 凭据保护、权限加固、私聊管理、流量超限仅告警  
 > ⚠️ **重要变化：** 已移除“流量超限自动关机”功能
 
 ### 🚨 重要行为调整
 
-为避免 类似于Oracle Cloud vps等热门区域实例在关机后可能因容量不足而无法恢复，本版本将原先的：
+为避免类似于 Oracle Cloud vps等热门区域实例在关机后可能因容量不足而无法恢复，本版本将原先的：
 
 ```text
 流量超限 → 自动关机
