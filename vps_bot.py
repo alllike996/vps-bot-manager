@@ -28,7 +28,7 @@ from telegram.helpers import escape_markdown
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.json"
 
-VERSION = "v3.8.4"
+VERSION = "v3.8.5"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -530,34 +530,99 @@ def get_recent_ssh_logins():
 
 
 def get_recent_ssh_failed_logins():
-    log_path = (
-        "/var/log/auth.log"
-        if os.path.exists("/var/log/auth.log")
-        else "/var/log/secure"
-    )
+    """
+    查询最近 SSH 登录失败记录。
 
-    if not os.path.exists(log_path):
-        return "⚠️ 未找到 SSH 认证日志。"
+    支持：
+    - Failed password
+    - Invalid user
+    - Failed publickey
+    - PAM authentication failure
+    - Connection closed / Disconnected from
+    - 认证尝试次数超限
+
+    优先读取 /var/log/auth.log 和 /var/log/secure；
+    若传统日志无匹配结果，则从 systemd journal 查询 sshd 日志。
+    """
+    patterns = [
+        re.compile(r"Failed password", re.IGNORECASE),
+        re.compile(r"Invalid user", re.IGNORECASE),
+        re.compile(r"Failed publickey", re.IGNORECASE),
+        re.compile(r"authentication failure", re.IGNORECASE),
+        re.compile(r"Connection closed", re.IGNORECASE),
+        re.compile(r"Disconnected from", re.IGNORECASE),
+        re.compile(
+            r"maximum authentication attempts exceeded",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"Too many authentication failures",
+            re.IGNORECASE,
+        ),
+    ]
+
+    matched_lines = deque(maxlen=10)
+    log_paths = [
+        "/var/log/auth.log",
+        "/var/log/secure",
+    ]
 
     try:
-        matched_lines = deque(maxlen=10)
+        # 1. 优先读取传统认证日志。
+        for log_path in log_paths:
+            if not os.path.exists(log_path):
+                continue
 
-        with open(
-            log_path,
-            "r",
-            encoding="utf-8",
-            errors="replace",
-        ) as f:
-            for line in f:
-                if "Failed password" in line:
-                    matched_lines.append(line.rstrip())
+            with open(
+                log_path,
+                "r",
+                encoding="utf-8",
+                errors="replace",
+            ) as f:
+                for line in f:
+                    if any(pattern.search(line) for pattern in patterns):
+                        matched_lines.append(line.rstrip())
 
-        output = "\n".join(matched_lines) or "暂无 SSH 失败登录记录"
+        # 2. 若 auth.log / secure 没有匹配结果，
+        #    则尝试从 systemd journal 读取 sshd 日志。
+        if not matched_lines:
+            result = subprocess.run(
+                [
+                    "journalctl",
+                    "-t",
+                    "sshd",
+                    "-n",
+                    "500",
+                    "--no-pager",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if any(pattern.search(line) for pattern in patterns):
+                        matched_lines.append(line.rstrip())
+
+        # 3. 没有找到失败认证记录。
+        if not matched_lines:
+            return (
+                "✅ *最近未发现可识别的 SSH 认证失败记录。*\n\n"
+                "已检查：密码失败、无效用户、公钥失败、"
+                "PAM 认证失败及 SSH 中断记录。"
+            )
+
+        output = "\n".join(matched_lines)
 
         return (
-            "❌ *最近 10 次 SSH 失败登录*\n\n"
+            "❌ *最近 10 次 SSH 失败登录/异常认证记录*\n\n"
             f"```\n{safe_code_block(output)}\n```"
         )
+
+    except subprocess.TimeoutExpired:
+        return "⚠️ 查询 SSH 失败记录超时。"
 
     except Exception as e:
         logger.error("获取 SSH 失败登录记录失败: %s", e)
