@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-import os
-import sys
 import json
+import os
 import psutil
-import subprocess
-from datetime import datetime
 import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from getpass import getpass
+from pathlib import Path
 
 VERSION = "v2.1.1"
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
-INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
-SHORTCUT_CMD = '/usr/local/bin/vps-bb'
-SYSTEMD_SERVICE = '/etc/systemd/system/vpsbot.service'
+INSTALL_DIR = Path(__file__).resolve().parent
+EXPECTED_INSTALL_DIR = Path("/opt/vpsbot").resolve()
+CONFIG_FILE = INSTALL_DIR / "config.json"
+SHORTCUT_CMD = Path("/usr/local/bin/vps-bb")
+SYSTEMD_SERVICE = Path("/etc/systemd/system/vpsbot.service")
 
 # ===================== 颜色定义 =====================
 RESET = "\033[0m"
@@ -22,185 +26,354 @@ YELLOW = "\033[33m"
 CYAN = "\033[36m"
 BOLD = "\033[1m"
 
+
 # ===================== 工具函数 =====================
 def clear_screen():
-    os.system("clear")
+    subprocess.run(["clear"], check=False)
+
+
+def require_root():
+    if os.geteuid() != 0:
+        print(f"{RED}❌ 请使用 root 或 sudo 运行：sudo vps-bb{RESET}")
+        sys.exit(1)
+
 
 def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-    try:
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    except Exception:
+    if not CONFIG_FILE.exists():
         return {}
 
-def save_config(cfg):
     try:
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(cfg, f, indent=4)
+        with CONFIG_FILE.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        if not isinstance(config, dict):
+            raise ValueError("配置文件格式不是 JSON 对象")
+
+        return config
+    except Exception as e:
+        print(f"{RED}❌ 读取配置失败: {e}{RESET}")
+        return {}
+
+
+def save_config(cfg):
+    """以原子方式写入配置，并确保文件权限始终是 0600。"""
+    temp_path = None
+
+    try:
+        INSTALL_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(INSTALL_DIR, 0o700)
+
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".config.",
+            suffix=".tmp",
+            dir=str(INSTALL_DIR),
+            text=True
+        )
+
+        os.fchmod(fd, 0o600)
+
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temp_path, CONFIG_FILE)
+        os.chmod(CONFIG_FILE, 0o600)
+
     except Exception as e:
         print(f"{RED}❌ 保存配置失败: {e}{RESET}")
 
-def safe_int_input(prompt):
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def safe_int_input(prompt, min_value=0):
     value = input(prompt).strip()
+
     if not value.isdigit():
         print(f"{RED}❌ 请输入有效数字！{RESET}")
         return None
-    return int(value)
+
+    result = int(value)
+
+    if result < min_value:
+        print(f"{RED}❌ 数值不能小于 {min_value}！{RESET}")
+        return None
+
+    return result
+
+
+def valid_bot_token(token):
+    if not token:
+        return False
+
+    if ":" not in token:
+        return False
+
+    bot_id, secret = token.split(":", 1)
+
+    if not bot_id.isdigit() or not secret:
+        return False
+
+    return all(char.isalnum() or char in "_-" for char in secret)
+
 
 def progress_bar(percent, width=30):
+    percent = max(0, min(100, percent))
     filled = int(width * percent / 100)
     bar = "█" * filled + "-" * (width - filled)
+
     if percent < 60:
         color = GREEN
     elif percent < 85:
         color = YELLOW
     else:
         color = RED
+
     return f"{color}[{bar}] {percent}%{RESET}"
+
+
+def pause():
+    input("\n按回车返回菜单...")
+
 
 # ===================== 设置功能 =====================
 def set_token():
     cfg = load_config()
-    token = input("请输入新的 Telegram Bot Token: ").strip()
-    if not token:
-        print(f"{RED}❌ Token 不能为空{RESET}")
+
+    token = getpass("请输入新的 Telegram Bot Token（输入不回显）: ").strip()
+
+    if not valid_bot_token(token):
+        print(f"{RED}❌ Token 格式异常，未保存。{RESET}")
         return
-    cfg['bot_token'] = token
+
+    cfg["bot_token"] = token
     save_config(cfg)
     print(f"{GREEN}✅ Bot Token 已更新！{RESET}")
 
+
 def set_admin():
     cfg = load_config()
-    admin_id = safe_int_input("请输入新的 Admin ID: ")
+
+    admin_id = safe_int_input("请输入新的 Admin ID: ", min_value=1)
+
     if admin_id is None:
         return
-    cfg['admin_id'] = admin_id
+
+    cfg["admin_id"] = admin_id
     save_config(cfg)
     print(f"{GREEN}✅ Admin ID 已更新！{RESET}")
 
+
 def set_limit():
     cfg = load_config()
-    limit = safe_int_input("请输入流量阈值(GB, 0为不限制): ")
+
+    limit = safe_int_input("请输入流量阈值（GB，0 为不限制）: ", min_value=0)
+
     if limit is None:
         return
-    cfg['limit_gb'] = limit
-    cfg['auto_shutdown'] = True if limit > 0 else False
+
+    cfg["limit_gb"] = limit
+    cfg["auto_shutdown"] = limit > 0
     save_config(cfg)
+
     print(f"{GREEN}✅ 流量阈值已更新为 {limit} GB{RESET}")
+
 
 def toggle_auto_shutdown():
     cfg = load_config()
-    cfg['auto_shutdown'] = not cfg.get('auto_shutdown', False)
+
+    current_limit = int(cfg.get("limit_gb", 0) or 0)
+
+    if current_limit <= 0:
+        print(f"{YELLOW}⚠️ 当前流量阈值为 0 GB，无法开启自动关机。{RESET}")
+        print(f"{YELLOW}请先通过“修改流量阈值”设置大于 0 的数值。{RESET}")
+        return
+
+    cfg["auto_shutdown"] = not cfg.get("auto_shutdown", False)
     save_config(cfg)
-    state = "开启" if cfg['auto_shutdown'] else "关闭"
-    print(f"{GREEN if state=='开启' else RED}✅ 自动关机已{state}{RESET}")
+
+    state = "开启" if cfg["auto_shutdown"] else "关闭"
+    color = GREEN if cfg["auto_shutdown"] else RED
+
+    print(f"{color}✅ 自动关机已{state}{RESET}")
+
 
 # ===================== 状态显示 =====================
 def show_status():
     cpu = psutil.cpu_percent(interval=1)
     mem = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    uptime = datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
+    disk = psutil.disk_usage("/")
+    boot_time = datetime.fromtimestamp(
+        psutil.boot_time()
+    ).strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"\n{CYAN}{BOLD}🖥 VPS 状态{RESET}")
-    print(f"⏱ 开机时间: {uptime}\n")
+    print(f"⏱ 开机时间: {boot_time}\n")
 
-    print(f"🧠 CPU 使用率:")
+    print("🧠 CPU 使用率:")
     print(progress_bar(cpu))
 
-    print(f"\n🐏 内存使用率:")
+    print("\n🐏 内存使用率:")
     print(progress_bar(mem.percent))
 
-    print(f"\n💾 磁盘使用率:")
+    print("\n💾 磁盘使用率:")
     print(progress_bar(disk.percent))
     print()
 
+
 def show_traffic():
     cfg = load_config()
-    iface = cfg.get('vnstat_interface')
+    target_iface = cfg.get("vnstat_interface", "")
 
     try:
-        result = subprocess.check_output(["vnstat", "--json"])
-        data = json.loads(result.decode())
+        result = subprocess.check_output(
+            ["vnstat", "--json"],
+            stderr=subprocess.STDOUT
+        )
+
+        data = json.loads(result.decode("utf-8"))
+        interfaces = data.get("interfaces", [])
+
+        if not interfaces:
+            print(f"{YELLOW}⚠️ vnStat 暂无任何接口流量数据。{RESET}")
+            return
 
         interface = None
-        for i in data['interfaces']:
-            if iface and i['name'] == iface:
-                interface = i
-                break
 
-        if not interface:
-            interface = data['interfaces'][0]
+        if target_iface:
+            for item in interfaces:
+                if item.get("name") == target_iface:
+                    interface = item
+                    break
 
-        rx = round(interface['traffic']['month'][-1]['rx']/1024**3, 2)
-        tx = round(interface['traffic']['month'][-1]['tx']/1024**3, 2)
+        if interface is None:
+            interface = interfaces[0]
+
+        months = interface.get("traffic", {}).get("month", [])
+
+        if not months:
+            print(
+                f"{YELLOW}⚠️ 接口 {interface.get('name', '未知')} "
+                f"暂无本月流量数据。{RESET}"
+            )
+            return
+
+        current_month = months[-1]
+        rx = round(current_month.get("rx", 0) / 1024**3, 2)
+        tx = round(current_month.get("tx", 0) / 1024**3, 2)
         total = round(rx + tx, 2)
 
-        print(f"\n{CYAN}{BOLD}📡 流量统计 ({interface['name']}){RESET}")
+        print(f"\n{CYAN}{BOLD}📡 流量统计 ({interface.get('name', '未知')}){RESET}")
         print(f"⬇️ 下载: {rx} GB")
         print(f"⬆️ 上传: {tx} GB")
         print(f"📊 总计: {total} GB\n")
 
     except FileNotFoundError:
-        print(f"{RED}⚠️ 未安装 vnstat{RESET}")
+        print(f"{RED}⚠️ 未安装 vnStat。{RESET}")
+    except subprocess.CalledProcessError as e:
+        output = e.output.decode("utf-8", errors="replace").strip()
+        print(f"{RED}⚠️ vnStat 执行失败: {output}{RESET}")
     except Exception as e:
         print(f"{RED}⚠️ 无法获取流量: {e}{RESET}")
 
+
 # ===================== 系统操作 =====================
 def reboot_vps():
-    confirm = input(f"{RED}⚠️ 确定要重启 VPS 吗? (y/n): {RESET}").lower()
-    if confirm == 'y':
-        subprocess.run(["reboot"])
+    confirm = input(
+        f"{RED}⚠️ 确定要重启 VPS 吗？请输入 REBOOT 确认: {RESET}"
+    ).strip()
+
+    if confirm != "REBOOT":
+        print(f"{YELLOW}已取消重启。{RESET}")
+        return
+
+    print(f"{YELLOW}🔄 正在请求重启 VPS...{RESET}")
+    subprocess.run(["systemctl", "reboot"], check=False)
+
 
 def shutdown_vps():
-    confirm = input(f"{RED}⚠️ 确定要关机 VPS 吗? (y/n): {RESET}").lower()
-    if confirm == 'y':
-        subprocess.run(["shutdown", "-h", "now"])
+    confirm = input(
+        f"{RED}⚠️ 确定要关机 VPS 吗？请输入 POWEROFF 确认: {RESET}"
+    ).strip()
+
+    if confirm != "POWEROFF":
+        print(f"{YELLOW}已取消关机。{RESET}")
+        return
+
+    print(f"{RED}🛑 正在请求关闭 VPS...{RESET}")
+    subprocess.run(["systemctl", "poweroff"], check=False)
+
 
 def restart_script():
+    print(f"{YELLOW}🔄 正在重启管理面板...{RESET}")
     python = sys.executable
     os.execl(python, python, *sys.argv)
 
+
 def stop_script():
+    print(f"{YELLOW}已退出管理面板。Bot 后台服务不会停止。{RESET}")
     sys.exit(0)
 
-def uninstall_script():
-    confirm = input(
-        f"{RED}⚠️ 确定要卸载管理脚本吗? "
-        "这将删除整个安装目录、快捷命令和 systemd 服务! (y/n): {RESET}"
-    ).lower()
 
-    if confirm != 'y':
-        print(f"{RED}❌ 已取消卸载{RESET}")
+def uninstall_script():
+    """仅允许卸载由 install.sh 安装到 /opt/vpsbot 的实例。"""
+    actual_dir = INSTALL_DIR.resolve()
+
+    if actual_dir != EXPECTED_INSTALL_DIR:
+        print(f"{RED}❌ 拒绝卸载：脚本目录不符合预期。{RESET}")
+        print(f"{YELLOW}当前目录: {actual_dir}{RESET}")
+        print(f"{YELLOW}预期目录: {EXPECTED_INSTALL_DIR}{RESET}")
+        return
+
+    confirm = input(
+        f"{RED}⚠️ 即将永久删除以下内容：\n"
+        f"  - {EXPECTED_INSTALL_DIR}\n"
+        f"  - {SYSTEMD_SERVICE}\n"
+        f"  - {SHORTCUT_CMD}\n"
+        f"请输入 DELETE 确认卸载: {RESET}"
+    ).strip()
+
+    if confirm != "DELETE":
+        print(f"{YELLOW}已取消卸载。{RESET}")
         return
 
     try:
-        # 停止 systemd 服务并删除
-        if os.path.exists(SYSTEMD_SERVICE):
-            subprocess.run(["systemctl", "stop", "vpsbot"])
-            subprocess.run(["systemctl", "disable", "vpsbot"])
-            os.remove(SYSTEMD_SERVICE)
-            subprocess.run(["systemctl", "daemon-reload"])
+        print(f"{YELLOW}⏳ 正在停止并移除 systemd 服务...{RESET}")
+
+        subprocess.run(
+            ["systemctl", "disable", "--now", "vpsbot"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        if SYSTEMD_SERVICE.exists():
+            SYSTEMD_SERVICE.unlink()
             print(f"{GREEN}✅ 已删除 systemd 服务: {SYSTEMD_SERVICE}{RESET}")
 
-        # 删除安装目录
-        if os.path.exists(INSTALL_DIR):
-            shutil.rmtree(INSTALL_DIR)
-            print(f"{GREEN}✅ 已删除安装目录: {INSTALL_DIR}{RESET}")
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
 
-        # 删除快捷命令
-        if os.path.exists(SHORTCUT_CMD):
-            os.remove(SHORTCUT_CMD)
+        if SHORTCUT_CMD.exists() or SHORTCUT_CMD.is_symlink():
+            SHORTCUT_CMD.unlink()
             print(f"{GREEN}✅ 已删除快捷命令: {SHORTCUT_CMD}{RESET}")
 
-        print(f"{RED}🛑 管理脚本和后台 Bot 已卸载，退出程序{RESET}")
+        if EXPECTED_INSTALL_DIR.exists():
+            shutil.rmtree(EXPECTED_INSTALL_DIR)
+            print(f"{GREEN}✅ 已删除安装目录: {EXPECTED_INSTALL_DIR}{RESET}")
+
+        print(f"{GREEN}✅ VPS Bot 已卸载。{RESET}")
+        print(f"{YELLOW}提示：vnStat 与 Python 系统依赖不会自动卸载。{RESET}")
 
     except Exception as e:
         print(f"{RED}⚠️ 卸载失败: {e}{RESET}")
 
     sys.exit(0)
+
 
 # ===================== 菜单 =====================
 def menu():
@@ -208,16 +381,24 @@ def menu():
         clear_screen()
         cfg = load_config()
 
-        auto_status = "开启" if cfg.get("auto_shutdown") else "关闭"
-        limit = cfg.get("limit_gb", 0)
+        auto_shutdown = bool(cfg.get("auto_shutdown", False))
+        auto_status = "开启" if auto_shutdown else "关闭"
+
+        try:
+            limit = int(cfg.get("limit_gb", 0) or 0)
+        except (TypeError, ValueError):
+            limit = 0
+
+        status_color = GREEN if auto_shutdown else RED
 
         print(f"""
 ========================
 {CYAN}{BOLD}   VPS 快捷管理面板
    Version {VERSION}{RESET}
 ========================
-自动关机状态: {GREEN if auto_status=='开启' else RED}{auto_status}{RESET}
+自动关机状态: {status_color}{auto_status}{RESET}
 流量阈值: {limit} GB
+安装目录: {INSTALL_DIR}
 ========================
 {YELLOW}1) 修改 Telegram Token{RESET}
 {YELLOW}2) 修改 Admin ID{RESET}
@@ -227,45 +408,53 @@ def menu():
 {GREEN}6) 查看流量统计{RESET}
 {RED}7) 重启 VPS{RESET}
 {RED}8) 关机 VPS{RESET}
-{YELLOW}9) 重启管理脚本{RESET}
-{YELLOW}10) 停止管理脚本{RESET}
-{RED}11) 卸载管理脚本{RESET}
+{YELLOW}9) 重启管理面板{RESET}
+{YELLOW}10) 退出管理面板{RESET}
+{RED}11) 卸载管理脚本与后台 Bot{RESET}
 {YELLOW}0) 退出{RESET}
 ========================
 """)
 
         choice = input("请输入选项: ").strip()
 
-        if choice == '1':
+        if choice == "1":
             set_token()
-        elif choice == '2':
+            pause()
+        elif choice == "2":
             set_admin()
-        elif choice == '3':
+            pause()
+        elif choice == "3":
             set_limit()
-        elif choice == '4':
+            pause()
+        elif choice == "4":
             toggle_auto_shutdown()
-        elif choice == '5':
+            pause()
+        elif choice == "5":
             show_status()
-        elif choice == '6':
+            pause()
+        elif choice == "6":
             show_traffic()
-        elif choice == '7':
+            pause()
+        elif choice == "7":
             reboot_vps()
-        elif choice == '8':
+            pause()
+        elif choice == "8":
             shutdown_vps()
-        elif choice == '9':
+            pause()
+        elif choice == "9":
             restart_script()
-        elif choice == '10':
+        elif choice == "10":
             stop_script()
-        elif choice == '11':
+        elif choice == "11":
             uninstall_script()
-        elif choice == '0':
-            print(f"{YELLOW}退出管理面板{RESET}")
+        elif choice == "0":
+            print(f"{YELLOW}退出管理面板。{RESET}")
             break
         else:
-            print(f"{RED}❌ 无效选项{RESET}")
+            print(f"{RED}❌ 无效选项。{RESET}")
+            pause()
 
-        input("\n按回车返回菜单...")
 
-# ===================== 主程序入口 =====================
 if __name__ == "__main__":
+    require_root()
     menu()
