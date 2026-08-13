@@ -52,7 +52,8 @@ fix/security-hardening为修复版本-目前最新，需要测试
 
 ## 🎉 最新更新：安全加固与流量告警模式
 
-> 🌿 **更新分支：** `fix/security-hardening`  
+> 🌿 **更新分支：** `fix/security-hardening`
+> 
 > 🛡️ **更新重点：** 凭据保护、权限加固、私聊管理、流量超限仅告警 、修复ssh失败记录无法调取（扩展了匹配规则：不仅检查 Failed password，还增加了 Invalid user、Failed publickey、authentication failure、Connection closed、Disconnected from 以及尝试次数超限等 8 种失败场景。）
 > 
 > ⚠️ **重要变化：** 已移除“流量超限自动关机”功能
